@@ -71,6 +71,7 @@ namespace EVMC4U
         //---
 
         //入力辞書(コールバックではなく定値で取得したい場合に使う)
+        [SerializeField]
         public Dictionary<string, bool> InputDictionary = new Dictionary<string, bool>();
 
         //---

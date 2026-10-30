@@ -1139,7 +1139,7 @@ namespace EVMC4U
                 isLoading = true;
 
                 synchronizationContext.Post(async (arg) => {
-                    RuntimeGltfInstance instance = await vrmImporter.LoadAsync(new VRMShaders.ImmediateCaller());
+                    RuntimeGltfInstance instance = await vrmImporter.LoadAsync(new UniGLTF.ImmediateCaller());
                     isLoading = false;
 
                     Model = instance.Root;

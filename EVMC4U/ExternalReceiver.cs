@@ -557,6 +557,9 @@ namespace EVMC4U
 
                 Debug.Log("[ExternalReceiver] New model detected");
 
+                // VRM10 Eyes Fix
+                SetupVRM10EyeBones();
+
                 //v0.56 BlendShape仕様変更対応
                 //Debug.Log("-- Make BlendShapeProxy BSKey Table --");
 
@@ -717,9 +720,32 @@ namespace EVMC4U
             }
         }
 
+        private void OnGUI()
+        {
+            if (!DebugStreamEnable) return;
+            var sb = new System.Text.StringBuilder();
+            sb.AppendLine("=== BLEND VAL diterima ===");
+            foreach (var kv in debugBlendValues) sb.AppendLine($"{kv.Key} = {kv.Value:F3}");
+            sb.AppendLine("=== BONE POS non-filter ===");
+            foreach (var kv in debugBoneValues) sb.AppendLine($"{kv.Key} = {kv.Value}");
+            GUI.Box(new Rect(10, 10, 600, Mathf.Min(700, 140 + (debugBlendValues.Count + debugBoneValues.Count) * 16)), sb.ToString());
+        }
         //メッセージ処理本体
         private void ProcessMessage(ref uOSC.Message message)
         {
+            if (DebugStreamEnable && message.values != null && message.values.Length > 0 && message.values[0] is string)
+            {
+                string key = ((string)message.values[0]).ToLower();
+                bool match = (DebugFilterKeyword == "") || key.Contains(DebugFilterKeyword.ToLower());
+
+                if (match && message.address == "/VMC/Ext/Blend/Val" && message.values.Length >= 2)
+                    debugBlendValues[(string)message.values[0]] = (float)message.values[1];
+                else if (match && message.address == "/VMC/Ext/Bone/Pos" && message.values.Length >= 8)
+                    debugBoneValues[(string)message.values[0]] = new Quaternion(
+                        (float)message.values[4], (float)message.values[5],
+                        (float)message.values[6], (float)message.values[7]);
+            }
+            
             //メッセージアドレスがない、あるいはメッセージがない不正な形式の場合は処理しない
             if (message.address == null || message.values == null)
             {
@@ -1097,6 +1123,10 @@ namespace EVMC4U
                 Destroy(LoadedModelParent);
                 LoadedModelParent = null;
             }
+            // Reset VRM 1.0 eye bone cache
+            isVRM10Model = false;
+            leftEyeTransform = null;
+            rightEyeTransform = null;
         }
 
         //ファイルからモデルを読み込む
@@ -1341,6 +1371,8 @@ namespace EVMC4U
                         {
                             //ボーン同期する。ただしフィルタはかけない
                             BoneSynchronizeSingle(t, ref bone, ref pos, ref rot, false, false);
+                            // VRM 1.0 eye bone fix
+                            if (isVRM10Model) UpdateVRM10EyeBones();
                         }
                     }
                     else
@@ -1383,6 +1415,78 @@ namespace EVMC4U
                 t.localRotation = rot;
             }
         }
+
+        // ==== VRM 1.0 Eye Control Fix (PR #2163 compatibility) ====
+        private bool isVRM10Model = false;
+        private Transform leftEyeTransform = null;
+        private Transform rightEyeTransform = null;
+        private Quaternion leftEyeRestRot = Quaternion.identity;
+        private Quaternion rightEyeRestRot = Quaternion.identity;
+        private Quaternion leftEyeNeutral = Quaternion.identity;
+        private Quaternion rightEyeNeutral = Quaternion.identity;
+        private bool eyeNeutralCaptured = false;
+        private void SetupVRM10EyeBones()
+        {
+            isVRM10Model = false;
+            leftEyeTransform = null;
+            rightEyeTransform = null;
+            
+            if (Model == null || animator == null)
+            {
+                return;
+            }
+            
+            // Cek apakah ini VRM 1.0 model
+            var vrm10Instance = Model.GetComponent<Vrm10Instance>();
+            isVRM10Model = vrm10Instance != null;
+            
+            // Cache eye bone transforms
+            leftEyeTransform = animator.GetBoneTransform(HumanBodyBones.LeftEye);
+            rightEyeTransform = animator.GetBoneTransform(HumanBodyBones.RightEye);
+            
+            if (isVRM10Model)
+            {
+                if (leftEyeTransform != null) leftEyeRestRot = leftEyeTransform.localRotation;
+                if (rightEyeTransform != null) rightEyeRestRot = rightEyeTransform.localRotation;
+                eyeNeutralCaptured = false;
+                Debug.Log("[EVMC4U] VRM 1.0 model detected. Eye bones will be synced via LateUpdate.");
+            }
+        }
+        private void UpdateVRM10EyeBones()
+        {
+            if (!isVRM10Model && !EyeBoneSynchronizeCutoff) return;
+
+            bool hasL = HumanBodyBonesRotationTable.ContainsKey(HumanBodyBones.LeftEye);
+            bool hasR = HumanBodyBonesRotationTable.ContainsKey(HumanBodyBones.RightEye);
+            if (!hasL && !hasR) return;
+
+            // Tekan F9 saat melihat lurus untuk mengambil ulang titik netral
+            if (Input.GetKeyDown(KeyCode.F9)) eyeNeutralCaptured = false;
+
+            Quaternion lr = hasL ? HumanBodyBonesRotationTable[HumanBodyBones.LeftEye] : Quaternion.identity;
+            Quaternion rr = hasR ? HumanBodyBonesRotationTable[HumanBodyBones.RightEye] : Quaternion.identity;
+
+            if (!eyeNeutralCaptured)
+            {
+                leftEyeNeutral = lr;
+                rightEyeNeutral = rr;
+                eyeNeutralCaptured = true;
+                Debug.Log($"[EVMC4U] Neutral mata ditangkap: L={lr} R={rr}");
+            }
+
+            // rest * inverse(neutral) * received  =>  offset ±22° hilang, hanya delta pandangan yang dipakai
+            if (leftEyeTransform != null && hasL)
+                leftEyeTransform.localRotation = leftEyeRestRot * Quaternion.Inverse(leftEyeNeutral) * lr;
+            if (rightEyeTransform != null && hasR)
+                rightEyeTransform.localRotation = rightEyeRestRot * Quaternion.Inverse(rightEyeNeutral) * rr;
+        }
+
+        [Header("Debug VMC Stream")]
+        public bool DebugStreamEnable = false;
+        public string DebugFilterKeyword = ""; // "" = tampilkan SEMUA, atau isi "brow" dll
+
+        private Dictionary<string, float> debugBlendValues = new Dictionary<string, float>();
+        private Dictionary<string, Quaternion> debugBoneValues = new Dictionary<string, Quaternion>();
 
         //ボーンENUM情報をキャッシュして高速化
         private bool HumanBodyBonesTryParse(ref string boneName, out HumanBodyBones bone)
